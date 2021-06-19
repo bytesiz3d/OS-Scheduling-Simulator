@@ -1,40 +1,12 @@
-import numpy as np
 from copy import deepcopy
-import matplotlib.pyplot as plt
-
-
-class Process:
-    def table_fmt(x):
-        return f'{x:^8}'  # 8 places, centered
-
-    def __init__(self, pid: int, burst: int, deadline: int, period: int, priority: int = 0) -> None:
-        self.pid = pid
-        self.burst = burst
-        self.deadline = deadline
-        self.period = period
-        self.priority = priority
-
-        self.release = 0
-
-    def __str__(self) -> str:
-        lst = [self.pid, self.burst, self.deadline, self.period, self.priority]
-        strs = map(Process.table_fmt, lst)
-        return ''.join(strs)
-
-    def __repr__(self) -> str:
-        lst = [self.pid, self.burst, self.deadline, self.period, self.priority]
-        strs = map(str, lst)
-        return f'({" ".join(strs)})'
-
-    def to_table(processes) -> str:
-        lst = ['ID', 'Ci', 'Di', 'Pi', 'pi']
-        strs = map(Process.table_fmt, lst)
-        header = ''.join(strs)
-        return header + '\n' + '\n'.join([str(row) for row in processes])
-
+from process import Process
 
 class Scheduler:
-    def static_schedule(processes: list[Process], time: int) -> list[int]:
+    @staticmethod
+    def _static_schedule(processes: list, time: int) -> list:
+        if processes is None:
+            return None
+
         t = 0
         schedule = []
 
@@ -60,59 +32,75 @@ class Scheduler:
 
         return schedule
 
-    def priority(processes: list[Process], time: int) -> list[int]:
-        p_sorted = sorted(deepcopy(processes), key=lambda p: p.priority)
-        return Scheduler.static_schedule(p_sorted, time)
+    @staticmethod
+    def schedule(processes: list, time: int) -> list:
+        return Scheduler._static_schedule(processes, time)
 
-    def rate_monotonic(processes: list[Process], time: int) -> list[int]:
+class RM_Scheduler(Scheduler):
+    @staticmethod
+    # RM Utilization test
+    def _utilization_bound(n: int) -> float:
+        return n * (2 ** (1/n) - 1)
+
+    @staticmethod
+    def schedule(processes: list, time: int) -> list:
         # Sort by ascending period lengths
         p_sorted = sorted(deepcopy(processes), key=lambda p: p.period)
-        return Scheduler.static_schedule(p_sorted, time)
 
-    def deadline_monotonic(processes: list[Process], time: int) -> list[int]:
+        # Schedule if it passes the utilization test
+        util = Process.utilization(processes)
+        if util <= RM_Scheduler._utilization_bound(len(processes)):
+            return Scheduler._static_schedule(p_sorted, time)
+
+        return None
+
+class DM_Scheduler(Scheduler):
+    @staticmethod
+    def schedule(processes: list, time: int) -> list:
         # Sort by ascending deadlines
         # As relative deadlines match the initial deadline if all processes were released together at 0
         p_sorted = sorted(deepcopy(processes), key=lambda p: p.deadline)
-        return Scheduler.static_schedule(p_sorted, time)
-
-    # -1 for idle
-    def plot(schedule: list[int], time: int, title: str = None):
-        # Add one to include the final minor cycle
-        t = np.arange(time + 1)
-        plt.xticks(t)
-
-        # Append the last scheduled process to include the final minor cycle
-        # Add one to raise P0
-        schedule.append(schedule[-1])
-        schedule = np.array(schedule) + 1
-
-        # Set yticks
-        p = np.unique(schedule)
-        if 0 in p: p = p[1:]  # Remove idle tick
-
-        ytx = [f'P{i-1}' for i in p]
-        plt.yticks(p, ytx)
-
-        # Plot
-        plt.fill_between(t, schedule, step='post', alpha=0.4)
-        plt.grid(alpha=0.25)
-
-        if title is not None:
-            print(title, np.array(schedule))
-            plt.title(title)
-        plt.show()
+        return Scheduler._static_schedule(p_sorted, time)
 
 
-ps = [
-    Process(0, 2, 2, 12),
-    Process(1, 1, 3, 6),
-    Process(2, 1, 4, 4),
-]
-print(Process.to_table(ps))
+class Priority_Scheduler(Scheduler):
+    @staticmethod
+    def schedule(processes: list, time: int) -> list:
+        p_sorted = sorted(deepcopy(processes), key=lambda p: p.priority)
+        return Scheduler._static_schedule(p_sorted, time)
 
-time = 24
-schedule = Scheduler.rate_monotonic(ps, time)
-Scheduler.plot(schedule, time, 'Rate Monotonic')
+class MP_Scheduler(Scheduler):
+    @staticmethod
+    def schedule(processes: list, n_processors: int, time: int) -> list:
+        return Scheduler._static_schedule(processes[0], time)
 
-schedule = Scheduler.deadline_monotonic(ps, time)
-Scheduler.plot(schedule, time, 'Deadline Monotonic')
+
+class FFRM_Scheduler(MP_Scheduler, RM_Scheduler):
+    @staticmethod
+    def schedule(processes: list, n_processors: int, time: int) -> list:
+        # Sort by ascending period lengths
+        p_sorted = sorted(deepcopy(processes), key=lambda p: p.period)
+
+        assigned_to = [[]] * n_processors
+        util_info = [tuple()] * n_processors
+        for process in p_sorted:
+            for processor in range(n_processors):
+                # Attempt to assign the process to the first processor
+                p_list = deepcopy(assigned_to[processor])
+                p_list.append(process)
+
+                # Continue if the assignment passes the utilization test
+                util = Process.utilization(p_list)
+                util_bound = RM_Scheduler._utilization_bound(len(p_list))
+                if util <= util_bound:
+                    assigned_to[processor] = p_list
+                    util_info[processor] = (util, util_bound)
+                    break
+
+        separator = '\r' + '\t' * 4
+        for processor in range(n_processors):
+            p_list = list(map(lambda p: p.pid, assigned_to[processor]))
+            u, ub = util_info[processor]
+            print(f'P{processor} is assigned {p_list}{separator}U = {u} <= {ub}')
+
+        return [Scheduler._static_schedule(ps, time) for ps in assigned_to]
